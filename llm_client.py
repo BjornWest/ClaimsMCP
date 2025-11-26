@@ -189,8 +189,10 @@ class LLMClient:
                 return None
 
             # Get the parsed response
-            parsed_response = response.choices[0].message.parsed
+            parsed_response = response.choices[0].message.content
 
+            # validate as pydantic model
+            parsed_response = response_model.model_validate_json(parsed_response)
             # Log the response
             if self.logger:
                 self.logger.info(f"Structured response received in {duration:.2f}s:")
@@ -206,7 +208,7 @@ class LLMClient:
                     )
 
                 self.logger.info(f"=== END STRUCTURED CALL #{self.call_count} ===\n")
-
+            print("Parsed response:", parsed_response)
             return parsed_response
 
         except Exception as e:
