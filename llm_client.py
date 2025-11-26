@@ -24,18 +24,18 @@ class LLMClient:
 
     def __init__(self):
         load_dotenv()
-        self.provider = "openai"
-        self.model = os.getenv("LLM_MODEL", "gpt-4o-2024-08-06")
+        self.provider = "vllm"
+        self.model = os.getenv("LLM_MODEL", "Qwen/Qwen3-8B")
         self.call_count = 0
 
         # Set up logging
         self.setup_logging()
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set.")
+        # api_key = os.getenv("OPENAI_API_KEY")
+        # if not api_key:
+        #     raise ValueError("OPENAI_API_KEY environment variable not set.")
 
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(base_url="http://localhost:8000/v1", api_key="")
 
     def setup_logging(self):
         """Set up logging for LLM calls."""
@@ -86,6 +86,7 @@ class LLMClient:
             "gpt-4o-2024-11-20",
             "gpt-4o-2024-12-17",
             "gpt-4o",  # Latest gpt-4o should support it
+            "Qwen/Qwen3-8B",
         ]
 
         # Check if any supported model name is contained in the current model
@@ -97,6 +98,8 @@ class LLMClient:
         elif "gpt-4o-2024" in model_lower:
             return True
         elif model_lower == "gpt-4o":
+            return True
+        elif "qwen/qwen3-8b" in model_lower:
             return True
 
         return False
@@ -157,12 +160,21 @@ class LLMClient:
             ]
 
             # Use structured outputs with beta.chat.completions.parse
-            response = self.client.beta.chat.completions.parse(
+            # response = self.client.beta.chat.completions.parse(
+            #     model=self.model,
+            #     messages=messages,
+            #     response_format=response_model,
+            #     temperature=0.0,
+            #     max_tokens=2048,
+            # )
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                response_format=response_model,
                 temperature=0.0,
                 max_tokens=2048,
+                extra_body={
+                    "guided_json": response_model.model_json_schema(),
+                },
             )
 
             end_time = datetime.now()
@@ -213,50 +225,3 @@ class LLMClient:
                 print(error_msg, file=sys.stderr)
 
             return None
-
-
-from vllm import AsyncLLMEngine, SamplingParams
-from vllm.sampling_params import StructuredOutputsParams
-import asyncio
-import uuid
-
-class LocalLLMClient(LLMClient):
-    def __init__(self, engine: AsyncLLMEngine, sampling_params: SamplingParams):
-        super().__init__()
-        self.inference_engine = engine
-        self.sampling_params = sampling_params
-
-    async def _process_request_async(self, prompt: str):
-        """The actual async logic that communicates with vLLM."""
-        request_id = str(uuid.uuid4())
-
-        results_generator = self.engine.generate(prompt, self.sampling_params, request_id)
-
-        final_output = None
-        async for request_output in results_generator:
-            final_output = request_output
-
-        # If the model filters the prompt entirely, final_output might remain None.
-        if final_output is None:
-            return []
-
-    def make_structured_request(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        response_model: Type[T],
-        stage: str = "unknown",
-    ) -> Optional[T]:
-        """
-        Makes a structured request to the local LLM using Pydantic models.
-        """
-        json_schema = response_model.model_json_schema()
-        structured_outputs_params = StructuredOutputsParams(json=json_schema)
-
-        output = self.inference_engine.chat(
-            system_prompt,
-            user_prompt,
-            structured_outputs_params=structured_outputs_params,
-        )
-        parsed_output = response_model.model_validate(output[0].outputs[0])
-        return output
