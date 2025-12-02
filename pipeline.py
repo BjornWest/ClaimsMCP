@@ -259,7 +259,7 @@ class ClaimifyPipeline:
     def setup_logging(self):
         """Set up logging for the pipeline."""
         # Check if logging is enabled
-        log_enabled = os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
+        log_enabled = True #os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
         
         if not log_enabled:
             self.logger = None
