@@ -9,7 +9,8 @@ import os
 import sys
 import logging
 from typing import List, Tuple, Optional
-from structured_prompts import (
+import threading
+from structured_prompts_se import (
     STRUCTURED_SELECTION_SYSTEM_PROMPT, 
     STRUCTURED_DISAMBIGUATION_SYSTEM_PROMPT, 
     STRUCTURED_DECOMPOSITION_SYSTEM_PROMPT
@@ -246,14 +247,14 @@ class ClaimifyPipeline:
         self.setup_logging()
         
         # Verify structured outputs are supported
-        if not self.llm_client.supports_structured_outputs():
-            raise ValueError(
-                f"Model {self.llm_client.model} does not support structured outputs. "
-                f"Please use a compatible model like gpt-4o-2024-08-06, gpt-4o-mini, or gpt-4o."
-            )
+        # if not self.llm_client.supports_structured_outputs():
+        #     raise ValueError(
+        #         f"Model {self.llm_client.model} does not support structured outputs. "
+        #         f"Please use a compatible model like gpt-4o-2024-08-06, gpt-4o-mini, or gpt-4o."
+        #     )
         
-        if self.logger:
-            self.logger.info("Structured outputs enabled for improved reliability")
+        # if self.logger:
+        #     self.logger.info("Structured outputs enabled for improved reliability")
 
     def setup_logging(self):
         """Set up logging for the pipeline."""
@@ -313,46 +314,15 @@ class ClaimifyPipeline:
         if self.logger:
             self.logger.info(f"Processing {len(sentences)} sentences")
         
+        all_claims_lock = threading.Lock()
+        threads = []
         for i, sentence in enumerate(sentences):
-            if self.logger:
-                self.logger.info(f"Processing sentence {i+1}/{len(sentences)}: {sentence[:100]}...")
-            
-            # Create context for the current sentence
-            # Using a fixed context window as per the paper's experiments
-            context_excerpt = create_context_for_sentence(sentences, i, p=5, f=5)
-
-            # Stage 2: Selection
-            selection_status, verifiable_sentence = run_selection_stage(
-                self.llm_client, self.question, context_excerpt, sentence
-            )
-            
-            if self.logger:
-                self.logger.info(f"SELECTION: Sentence {selection_status}")
-            
-            if selection_status != 'verifiable':
-                continue
-
-            # Stage 3: Disambiguation
-            disambiguation_status, clarified_sentence = run_disambiguation_stage(
-                self.llm_client, self.question, context_excerpt, verifiable_sentence
-            )
-            
-            if self.logger:
-                self.logger.info(f"DISAMBIGUATION: Sentence {disambiguation_status}")
-            
-            if disambiguation_status != 'resolved':
-                continue
-
-            # Stage 4: Decomposition
-            extracted_claims = run_decomposition_stage(
-                self.llm_client, self.question, context_excerpt, clarified_sentence
-            )
-            
-            if self.logger:
-                self.logger.info(f"DECOMPOSITION: Extracted {len(extracted_claims)} claims")
-            
-            if extracted_claims:
-                all_claims.extend(extracted_claims)
+            thread = threading.Thread(target=self.process_sentence, args=(sentence, i, sentences, all_claims, all_claims_lock))
+            threads.append(thread)
+            thread.start()
+        
+        for thread in threads:
+            thread.join()
         
         # Return a de-duplicated list of claims
         unique_claims = list(dict.fromkeys(all_claims))
@@ -361,3 +331,59 @@ class ClaimifyPipeline:
             self.logger.info(f"Pipeline completed: {len(unique_claims)} unique claims extracted")
         
         return unique_claims 
+    
+    def process_sentence(self, sentence: str, i: int, sentences: List[str], all_claims: List[str], all_claims_lock: threading.Lock):
+        """
+        Processes a single sentence in the pipeline.
+        
+        Args:
+            sentence: The sentence to process
+            i: The index of the sentence
+            sentences: The list of all sentences
+        """
+        try:
+            if self.logger:
+                    self.logger.info(f"Processing sentence {i+1}/{len(sentences)}: {sentence[:100]}...")
+                
+                    # Create context for the current sentence
+                    # Using a fixed context window as per the paper's experiments
+                    context_excerpt = create_context_for_sentence(sentences, i, p=5, f=5)
+
+                    # Stage 2: Selection
+                    selection_status, verifiable_sentence = run_selection_stage(
+                        self.llm_client, self.question, context_excerpt, sentence
+                    )
+                    
+                    if self.logger:
+                        self.logger.info(f"SELECTION: Sentence {selection_status}")
+                    
+                    if selection_status != 'verifiable':
+                        return
+
+                    # Stage 3: Disambiguation
+                    disambiguation_status, clarified_sentence = run_disambiguation_stage(
+                        self.llm_client, self.question, context_excerpt, verifiable_sentence
+                    )
+                    
+                    if self.logger:
+                        self.logger.info(f"DISAMBIGUATION: Sentence {disambiguation_status}")
+                    
+                    if disambiguation_status != 'resolved':
+                        return
+
+                    # Stage 4: Decomposition
+                    extracted_claims = run_decomposition_stage(
+                        self.llm_client, self.question, context_excerpt, clarified_sentence
+                    )
+                    
+                    if self.logger:
+                        self.logger.info(f"DECOMPOSITION: Extracted {len(extracted_claims)} claims")
+                    
+                    if extracted_claims:
+                        with all_claims_lock:
+                            all_claims.extend(extracted_claims)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error processing sentence {i+1}/{len(sentences)}: {e}")
+            return
+            

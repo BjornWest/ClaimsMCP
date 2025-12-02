@@ -22,10 +22,10 @@ class LLMClient:
     A client that communicates with OpenAI API and supports structured outputs with Pydantic models.
     """
 
-    def __init__(self):
+    def __init__(self, model: str = "Qwen/Qwen3-235b-a22b"):
         load_dotenv()
         self.provider = "vllm"
-        self.model = os.getenv("LLM_MODEL", "Qwen/Qwen3-8B")
+        self.model = model
         self.call_count = 0
 
         # Set up logging
@@ -35,7 +35,7 @@ class LLMClient:
         # if not api_key:
         #     raise ValueError("OPENAI_API_KEY environment variable not set.")
 
-        self.client = OpenAI(base_url="http://localhost:8000/v1", api_key="")
+        self.client = OpenAI(base_url="http://localhost:80/v1", api_key="")
 
     def setup_logging(self):
         """Set up logging for LLM calls."""
@@ -123,11 +123,11 @@ class LLMClient:
         Returns:
             Parsed response as the specified Pydantic model, or None on failure
         """
-        if not self.supports_structured_outputs():
-            raise ValueError(
-                f"Model {self.model} does not support structured outputs. "
-                f"Please use a compatible model like gpt-4o-2024-08-06, gpt-4o-mini, or gpt-4o."
-            )
+        # if not self.supports_structured_outputs():
+        #     raise ValueError(
+        #         f"Model {self.model} does not support structured outputs. "
+        #         f"Please use a compatible model like gpt-4o-2024-08-06, gpt-4o-mini, or gpt-4o."
+        #     )
 
         self.call_count += 1
         start_time = datetime.now()
