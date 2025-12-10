@@ -15,9 +15,13 @@ from structured_prompts_se import (
     STRUCTURED_DISAMBIGUATION_SYSTEM_PROMPT, 
     STRUCTURED_DECOMPOSITION_SYSTEM_PROMPT
 )
-from structured_models import SelectionResponse, DisambiguationResponse, DecompositionResponse
+# from structured_models import SelectionResponse, DisambiguationResponse, DecompositionResponse
 
-
+from structured_models_se import (
+    UrvalsSvar as SelectionResponse, 
+    AvtydningsSvar as DisambiguationResponse, 
+    DekomponeringsSvar as DecompositionResponse
+)
 def ensure_nltk_data():
     """Ensure NLTK punkt tokenizer data is downloaded."""
     try:
@@ -94,7 +98,7 @@ def run_selection_stage(llm_client, question: str, excerpt: str, sentence: str) 
     Returns:
         Tuple of (status, processed_sentence) where status is 'verifiable', 'unverifiable', or 'error'
     """
-    user_prompt = f"Question:\n{question}\n\nExcerpt:\n{excerpt}\n\nSentence:\n{sentence}"
+    user_prompt = f"Fråga:\n{question}\n\nUtdrag:\n{excerpt}\n\nMening:\n{sentence}"
     
     structured_response = llm_client.make_structured_request(
         system_prompt=STRUCTURED_SELECTION_SYSTEM_PROMPT,
@@ -121,14 +125,14 @@ def parse_structured_selection_output(response: SelectionResponse, original_sent
         Tuple of (status, sentence) where status indicates the result
     """
     try:
-        if response.final_submission == "Contains a specific and verifiable proposition":
-            if response.sentence_with_only_verifiable_information:
-                if response.sentence_with_only_verifiable_information.lower() == "remains unchanged":
+        if response.slutlig_bedömning == "Innehåller ett specifikt och verifierbart påstående":
+            if response.mening_med_endast_verifierbar_info:
+                if response.mening_med_endast_verifierbar_info.lower() == "förblir oförändrad":
                     return 'verifiable', original_sentence
-                elif response.sentence_with_only_verifiable_information.lower() == "none":
+                elif response.mening_med_endast_verifierbar_info == None:
                     return 'unverifiable', None
                 else:
-                    return 'verifiable', response.sentence_with_only_verifiable_information
+                    return 'verifiable', response.mening_med_endast_verifierbar_info
             else:
                 return 'verifiable', original_sentence
         else:
@@ -150,7 +154,7 @@ def run_disambiguation_stage(llm_client, question: str, excerpt: str, sentence: 
     Returns:
         Tuple of (status, processed_sentence) where status is 'resolved', 'unresolvable', or 'error'
     """
-    user_prompt = f"Question:\n{question}\n\nExcerpt:\n{excerpt}\n\nSentence:\n{sentence}"
+    user_prompt = f"Fråga:\n{question}\n\nUtdrag:\n{excerpt}\n\nMening:\n{sentence}"
     
     structured_response = llm_client.make_structured_request(
         system_prompt=STRUCTURED_DISAMBIGUATION_SYSTEM_PROMPT,
@@ -177,11 +181,11 @@ def parse_structured_disambiguation_output(response: DisambiguationResponse, ori
         Tuple of (status, sentence) where status indicates the result
     """
     try:
-        if response.decontextualized_sentence:
-            if response.decontextualized_sentence == "Cannot be decontextualized":
+        if response.avkontextualiserad_mening:
+            if response.avkontextualiserad_mening == "Kan inte avkontextualiseras":
                 return 'unresolvable', None
             else:
-                return 'resolved', response.decontextualized_sentence
+                return 'resolved', response.avkontextualiserad_mening
         else:
             return 'unresolvable', None
     except Exception as e:
@@ -201,7 +205,7 @@ def run_decomposition_stage(llm_client, question: str, excerpt: str, sentence: s
     Returns:
         A list of extracted claim strings
     """
-    user_prompt = f"Question:\n{question}\n\nExcerpt:\n{excerpt}\n\nSentence:\n{sentence}"
+    user_prompt = f"Fråga:\n{question}\n\nUtdrag:\n{excerpt}\n\nMening:\n{sentence}"
     
     structured_response = llm_client.make_structured_request(
         system_prompt=STRUCTURED_DECOMPOSITION_SYSTEM_PROMPT,
@@ -228,7 +232,7 @@ def parse_structured_decomposition_output(response: DecompositionResponse) -> Li
     """
     try:
         # Extract text from the Claim objects in final_claims
-        return [claim.text for claim in response.final_claims]
+        return [claim.text for claim in response.slutgiltiga_påstaenden]
     except Exception as e:
         return []
 
@@ -259,7 +263,7 @@ class ClaimifyPipeline:
     def setup_logging(self):
         """Set up logging for the pipeline."""
         # Check if logging is enabled
-        log_enabled = True #os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
+        log_enabled = False #os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
         
         if not log_enabled:
             self.logger = None
@@ -308,12 +312,11 @@ class ClaimifyPipeline:
         if not text_to_process.strip():
             return []
 
-        all_claims = []
         sentences = split_into_sentences(text_to_process)
         
         if self.logger:
             self.logger.info(f"Processing {len(sentences)} sentences")
-        
+        all_claims = []
         all_claims_lock = threading.Lock()
         threads = []
         for i, sentence in enumerate(sentences):
@@ -323,7 +326,6 @@ class ClaimifyPipeline:
         
         for thread in threads:
             thread.join()
-        
         # Return a de-duplicated list of claims
         unique_claims = list(dict.fromkeys(all_claims))
         
@@ -343,46 +345,47 @@ class ClaimifyPipeline:
         """
         try:
             if self.logger:
-                    self.logger.info(f"Processing sentence {i+1}/{len(sentences)}: {sentence[:100]}...")
-                
-                    # Create context for the current sentence
-                    # Using a fixed context window as per the paper's experiments
-                    context_excerpt = create_context_for_sentence(sentences, i, p=5, f=5)
+                self.logger.info(f"Processing sentence {i+1}/{len(sentences)}: {sentence[:100]}...")
+            
+            # Create context for the current sentence
+            # Using a fixed context window as per the paper's experiments
+            context_excerpt = create_context_for_sentence(sentences, i, p=5, f=5)
 
-                    # Stage 2: Selection
-                    selection_status, verifiable_sentence = run_selection_stage(
-                        self.llm_client, self.question, context_excerpt, sentence
-                    )
-                    
-                    if self.logger:
-                        self.logger.info(f"SELECTION: Sentence {selection_status}")
-                    
-                    if selection_status != 'verifiable':
-                        return
+            # Stage 2: Selection
+            selection_status, verifiable_sentence = run_selection_stage(
+                self.llm_client, self.question, context_excerpt, sentence
+            )
+            
+            if self.logger:
+                self.logger.info(f"SELECTION: Sentence {selection_status}")
+            
+            if selection_status != 'verifiable':
+                return
 
-                    # Stage 3: Disambiguation
-                    disambiguation_status, clarified_sentence = run_disambiguation_stage(
-                        self.llm_client, self.question, context_excerpt, verifiable_sentence
-                    )
-                    
-                    if self.logger:
-                        self.logger.info(f"DISAMBIGUATION: Sentence {disambiguation_status}")
-                    
-                    if disambiguation_status != 'resolved':
-                        return
+            # Stage 3: Disambiguation
+            disambiguation_status, clarified_sentence = run_disambiguation_stage(
+                self.llm_client, self.question, context_excerpt, verifiable_sentence
+            )
+            
+            if self.logger:
+                self.logger.info(f"DISAMBIGUATION: Sentence {disambiguation_status}")
+            
+            if disambiguation_status != 'resolved':
+                return
 
-                    # Stage 4: Decomposition
-                    extracted_claims = run_decomposition_stage(
-                        self.llm_client, self.question, context_excerpt, clarified_sentence
-                    )
-                    
-                    if self.logger:
-                        self.logger.info(f"DECOMPOSITION: Extracted {len(extracted_claims)} claims")
-                    
-                    if extracted_claims:
-                        with all_claims_lock:
-                            all_claims.extend(extracted_claims)
+            # Stage 4: Decomposition
+            extracted_claims = run_decomposition_stage(
+                self.llm_client, self.question, context_excerpt, clarified_sentence
+            )
+            
+            if self.logger:
+                self.logger.info(f"DECOMPOSITION: Extracted {len(extracted_claims)} claims")
+            
+            if extracted_claims:
+                with all_claims_lock:
+                    all_claims.extend(extracted_claims)
         except Exception as e:
+            print(e)
             if self.logger:
                 self.logger.error(f"Error processing sentence {i+1}/{len(sentences)}: {e}")
             return

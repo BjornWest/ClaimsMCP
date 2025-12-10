@@ -22,7 +22,7 @@ class LLMClient:
     A client that communicates with OpenAI API and supports structured outputs with Pydantic models.
     """
 
-    def __init__(self, model: str = "Qwen/Qwen3-235b-a22b"):
+    def __init__(self, model: str = "openai/gpt-oss-120b"):
         load_dotenv()
         self.provider = "vllm"
         self.model = model
@@ -35,12 +35,12 @@ class LLMClient:
         # if not api_key:
         #     raise ValueError("OPENAI_API_KEY environment variable not set.")
 
-        self.client = OpenAI(base_url="http://localhost:80/v1", api_key="")
+        self.client = OpenAI(base_url="http://localhost:8000/v1", api_key="")
 
     def setup_logging(self):
         """Set up logging for LLM calls."""
         # Check if logging is enabled
-        log_enabled = os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
+        log_enabled = False #os.getenv("LOG_LLM_CALLS", "true").lower() in ("true", "1", "yes")
 
         if not log_enabled:
             self.logger = None
@@ -158,41 +158,36 @@ class LLMClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-
-            # Use structured outputs with beta.chat.completions.parse
-            # response = self.client.beta.chat.completions.parse(
-            #     model=self.model,
-            #     messages=messages,
-            #     response_format=response_model,
-            #     temperature=0.0,
-            #     max_tokens=2048,
-            # )
+            # print("\n\nSystem prompt:", system_prompt)
+            # print("\n\nUser prompt:", user_prompt)
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=2048,
+                messages=[{"role": "user", "content": user_prompt}],
                 extra_body={
-                    "guided_json": response_model.model_json_schema(),
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "Category",
+                            "strict": True,
+                            "schema": response_model.model_json_schema(),
+                        },
+                    }
                 },
             )
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
 
-            # Check for refusal
-            if response.choices[0].message.refusal:
-                if self.logger:
-                    self.logger.warning(
-                        f"Call #{self.call_count} refused: {response.choices[0].message.refusal}"
-                    )
-                return None
-
             # Get the parsed response
             parsed_response = response.choices[0].message.content
 
             # validate as pydantic model
-            parsed_response = response_model.model_validate_json(parsed_response)
+            try:
+                parsed_response = response_model.model_validate_json(parsed_response)
+            except Exception as e:
+                print("Error validating response, retrying:", e)
+                print("Response:", parsed_response)
+                return self.make_structured_request(system_prompt, user_prompt, response_model, stage)
             # Log the response
             if self.logger:
                 self.logger.info(f"Structured response received in {duration:.2f}s:")
@@ -208,7 +203,7 @@ class LLMClient:
                     )
 
                 self.logger.info(f"=== END STRUCTURED CALL #{self.call_count} ===\n")
-            print("Parsed response:", parsed_response)
+            # print("Parsed response:", parsed_response)
             return parsed_response
 
         except Exception as e:
