@@ -163,6 +163,9 @@ class LLMClient:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": user_prompt}],
+                # frequency_penalty=1.5,
+                max_tokens = 2048,
+                # temperature=1.5,
                 extra_body={
                     "response_format": {
                         "type": "json_schema",
@@ -173,6 +176,9 @@ class LLMClient:
                         },
                     }
                 },
+                # extra_body={
+                #     "guided_json":response_model.model_json_schema(),
+                # }
             )
 
             end_time = datetime.now()
@@ -186,7 +192,9 @@ class LLMClient:
                 parsed_response = response_model.model_validate_json(parsed_response)
             except Exception as e:
                 print("Error validating response, retrying:", e)
-                print("Response:", parsed_response)
+                print("Parsed response:", parsed_response)
+                print("Response:", response)
+                print("Response.choices[0].message.content:", response.choices[0].message.content)
                 return self.make_structured_request(system_prompt, user_prompt, response_model, stage)
             # Log the response
             if self.logger:
