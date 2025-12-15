@@ -192,9 +192,6 @@ class LLMClient:
                 parsed_response = response_model.model_validate_json(parsed_response)
             except Exception as e:
                 print("Error validating response, retrying:", e)
-                print("Parsed response:", parsed_response)
-                print("Response:", response)
-                print("Response.choices[0].message.content:", response.choices[0].message.content)
                 return self.make_structured_request(system_prompt, user_prompt, response_model, stage)
             # Log the response
             if self.logger:

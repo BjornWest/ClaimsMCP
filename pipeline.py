@@ -8,6 +8,7 @@ import nltk
 import os
 import sys
 import logging
+import time
 from typing import List, Tuple, Optional
 import threading
 from structured_prompts_se import (
@@ -22,6 +23,55 @@ from structured_models_se import (
     AvtydningsSvar as DisambiguationResponse, 
     DekomponeringsSvar as DecompositionResponse
 )
+
+
+class UnifiedSentenceProgress:
+    """
+    Thread-safe progress helper for a single, unified sentence progress bar.
+
+    Supports dynamically increasing the total as sentence-splitting discovers work.
+    Intended usage:
+      - call add_total(n) after splitting an article into n sentences
+      - call update(1) when a sentence finishes processing
+    """
+
+    def __init__(self, total: int = 0, desc: str = "Processing sentences", unit: str = "sent"):
+        from tqdm.auto import tqdm  # local import to keep pipeline import-light
+
+        self._lock = threading.RLock()
+        self._pbar = tqdm(total=total, desc=desc, unit=unit)
+        self._last_postfix_refresh = 0.0
+        self._refresh_postfix_locked(force=True)
+
+    def add_total(self, n: int) -> None:
+        if not n or n <= 0:
+            return
+        with self._lock:
+            if self._pbar.total is None:
+                self._pbar.total = 0
+            self._pbar.total += int(n)
+            self._refresh_postfix_locked(force=True)
+
+    def update(self, n: int = 1) -> None:
+        if not n:
+            return
+        with self._lock:
+            self._pbar.update(int(n))
+            self._refresh_postfix_locked(force=False)
+
+    def close(self) -> None:
+        with self._lock:
+            self._pbar.close()
+
+    def _refresh_postfix_locked(self, force: bool) -> None:
+        now = time.monotonic()
+        if not force and (now - self._last_postfix_refresh) < 0.25:
+            return
+        total = int(self._pbar.total or 0)
+        done = int(self._pbar.n)
+        left = max(0, total - done)
+        self._pbar.set_postfix(done=done, left=left, total=total)
+        self._last_postfix_refresh = now
 def ensure_nltk_data():
     """Ensure NLTK punkt tokenizer data is downloaded."""
     try:
@@ -299,7 +349,7 @@ class ClaimifyPipeline:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
-    def run(self, text_to_process: str) -> List[str]:
+    def run(self, text_to_process: str, progress: Optional[object] = None) -> List[str]:
         """
         Runs the full Claimify pipeline on a given text.
         
@@ -313,14 +363,26 @@ class ClaimifyPipeline:
             return []
 
         sentences = split_into_sentences(text_to_process)
+
+        # If a unified progress bar is provided, grow its total as we discover work.
+        # We start by accounting for the Selection stage for every sentence.
+        if progress is not None and hasattr(progress, "add_total"):
+            try:
+                progress.add_total(len(sentences))
+            except Exception:
+                pass
         
         if self.logger:
             self.logger.info(f"Processing {len(sentences)} sentences")
         all_claims = []
         all_claims_lock = threading.Lock()
         threads = []
+        def _process_sentence_with_progress(sentence: str, i: int):
+            # Progress updates are handled inside the pipeline stages
+            self.process_sentence(sentence, i, sentences, all_claims, all_claims_lock, progress=progress)
+
         for i, sentence in enumerate(sentences):
-            thread = threading.Thread(target=self.process_sentence, args=(sentence, i, sentences, all_claims, all_claims_lock))
+            thread = threading.Thread(target=_process_sentence_with_progress, args=(sentence, i))
             threads.append(thread)
             thread.start()
         
@@ -334,7 +396,15 @@ class ClaimifyPipeline:
         
         return unique_claims 
     
-    def process_sentence(self, sentence: str, i: int, sentences: List[str], all_claims: List[str], all_claims_lock: threading.Lock):
+    def process_sentence(
+        self,
+        sentence: str,
+        i: int,
+        sentences: List[str],
+        all_claims: List[str],
+        all_claims_lock: threading.Lock,
+        progress: Optional[object] = None,
+    ):
         """
         Processes a single sentence in the pipeline.
         
@@ -352,9 +422,17 @@ class ClaimifyPipeline:
             context_excerpt = create_context_for_sentence(sentences, i, p=5, f=5)
 
             # Stage 2: Selection
-            selection_status, verifiable_sentence = run_selection_stage(
-                self.llm_client, self.question, context_excerpt, sentence
-            )
+            try:
+                selection_status, verifiable_sentence = run_selection_stage(
+                    self.llm_client, self.question, context_excerpt, sentence
+                )
+            finally:
+                # Selection was accounted for in run() via add_total(len(sentences))
+                if progress is not None and hasattr(progress, "update"):
+                    try:
+                        progress.update(1)
+                    except Exception:
+                        pass
             
             if self.logger:
                 self.logger.info(f"SELECTION: Sentence {selection_status}")
@@ -363,9 +441,21 @@ class ClaimifyPipeline:
                 return
 
             # Stage 3: Disambiguation
-            disambiguation_status, clarified_sentence = run_disambiguation_stage(
-                self.llm_client, self.question, context_excerpt, verifiable_sentence
-            )
+            if progress is not None and hasattr(progress, "add_total"):
+                try:
+                    progress.add_total(1)
+                except Exception:
+                    pass
+            try:
+                disambiguation_status, clarified_sentence = run_disambiguation_stage(
+                    self.llm_client, self.question, context_excerpt, verifiable_sentence
+                )
+            finally:
+                if progress is not None and hasattr(progress, "update"):
+                    try:
+                        progress.update(1)
+                    except Exception:
+                        pass
             
             if self.logger:
                 self.logger.info(f"DISAMBIGUATION: Sentence {disambiguation_status}")
@@ -374,9 +464,21 @@ class ClaimifyPipeline:
                 return
 
             # Stage 4: Decomposition
-            extracted_claims = run_decomposition_stage(
-                self.llm_client, self.question, context_excerpt, clarified_sentence
-            )
+            if progress is not None and hasattr(progress, "add_total"):
+                try:
+                    progress.add_total(1)
+                except Exception:
+                    pass
+            try:
+                extracted_claims = run_decomposition_stage(
+                    self.llm_client, self.question, context_excerpt, clarified_sentence
+                )
+            finally:
+                if progress is not None and hasattr(progress, "update"):
+                    try:
+                        progress.update(1)
+                    except Exception:
+                        pass
             
             if self.logger:
                 self.logger.info(f"DECOMPOSITION: Extracted {len(extracted_claims)} claims")
