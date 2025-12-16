@@ -36,7 +36,7 @@ class UnifiedSentenceProgress:
     """
 
     def __init__(self, total: int = 0, desc: str = "Processing sentences", unit: str = "sent"):
-        from tqdm.auto import tqdm  # local import to keep pipeline import-light
+        from tqdm.notebook import tqdm  # local import to keep pipeline import-light
 
         self._lock = threading.RLock()
         self._pbar = tqdm(total=total, desc=desc, unit=unit)
